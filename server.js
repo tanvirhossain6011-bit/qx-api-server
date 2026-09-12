@@ -1,117 +1,107 @@
 const express = require('express');
 const WebSocket = require('ws');
+
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 3000;
 
-let marketStore = {};
+// Instant Response-এর জন্য ইন-মেমরি ক্যাশ অবজেক্ট
+let marketCache = {
+    all: {},
+    symbols: {}
+};
 
-function getFormattedData(symbol) {
-  const data = marketStore[symbol];
-  if (!data) {
-    return {
-      status: "error",
-      message: `No live data received yet for symbol: ${symbol}`,
-      developer: "TANVIR HOSSAIN",
-      timestamp: Date.now()
-    };
-  }
-  return {
-    status: "success",
-    developer: "TANVIR HOSSAIN",
-    symbol: symbol,
-    timestamp: Date.now(),
-    candle: {
-      open: data.open || 0,
-      high: data.high || 0,
-      low: data.low || 0,
-      close: data.close || 0,
-      bodySize: Math.abs((data.close || 0) - (data.open || 0)),
-      direction: (data.close >= data.open) ? "CALL" : "PUT"
-    },
-    payout: data.payout || "85%"
-  };
+function connectQuotexWS() {
+    const ws = new WebSocket('wss://ws2.quotex.com/socket.io/?EIO=3&transport=websocket');
+
+    ws.on('open', () => {
+        console.log('Connected to Quotex WebSocket');
+        // Quotex হ্যান্ডশেক এবং সাবস্ক্রিপশন পিং
+        ws.send('42["authorization",{"session":""}]');
+    });
+
+    ws.on('message', (data) => {
+        const messageStr = data.toString();
+
+        // ক্যান্ডেল ও পেআউট ডেটা পার্স করে ক্যাশে সেভ করা
+        if (messageStr.startsWith('42')) {
+            try {
+                const parsed = JSON.parse(messageStr.substring(2));
+                const event = parsed[0];
+                const payload = parsed[1];
+
+                if (event === 'candles/update' || event === 'history' || event === 'realtime') {
+                    const symbol = payload.symbol || payload.pair;
+                    if (symbol) {
+                        marketCache.symbols[symbol] = {
+                            symbol: symbol,
+                            data: payload,
+                            updated_at: Date.now()
+                        };
+                    }
+                    marketCache.all[symbol || 'last_update'] = payload;
+                }
+            } catch (err) {
+                // জেসন পার্স না হলে ইগনোর করবে
+            }
+        }
+    });
+
+    ws.on('close', () => {
+        console.log('WS Connection closed. Reconnecting in 1s...');
+        setTimeout(connectQuotexWS, 1000);
+    });
+
+    ws.on('error', (error) => {
+        console.error('WS Error:', error);
+        ws.close();
+    });
+
+    // প্রতি ২৫ সেকেন্ড পর পর পিং পাঠিয়ে কানেকশন একটিভ রাখা
+    setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send('2');
+        }
+    }, 25000);
 }
 
-function connectQX() {
-  const ws = new WebSocket('wss://ws2.quotex.com/socket.io/?EIO=3&transport=websocket');
+// ব্যাকগ্রাউন্ডে WebSocket চালু রাখা
+connectQuotexWS();
 
-  ws.on('open', () => {
-    console.log('Connected to Quotex WebSocket stream.');
-    ws.send('42["authorization",{"session":""}]');
-  });
-
-  ws.on('message', (rawData) => {
-    const str = rawData.toString();
-
-    if (str === '2') {
-      ws.send('3');
-      return;
-    }
-
-    if (str.startsWith('42')) {
-      try {
-        const parsed = JSON.parse(str.slice(2));
-        const eventName = parsed[0];
-        const payload = parsed[1];
-
-        if (eventName === 'liveData' && payload) {
-          const sym = payload.asset || payload.symbol;
-          if (sym) {
-            marketStore[sym] = { ...marketStore[sym], ...payload };
-          }
-        }
-
-        if (eventName === 'assets/list' || eventName === 'payouts') {
-          if (Array.isArray(payload)) {
-            payload.forEach(item => {
-              const sym = item.name || item.symbol;
-              if (sym) {
-                marketStore[sym] = marketStore[sym] || {};
-                marketStore[sym].payout = item.payout ? `${item.payout}%` : "85%";
-              }
-            });
-          }
-        }
-      } catch (e) {}
-    }
-  });
-
-  ws.on('close', () => {
-    setTimeout(connectQX, 3000);
-  });
-
-  ws.on('error', () => {
-    ws.close();
-  });
-}
-
-connectQX();
-
+// API Endpoint (Instant 0.0001s Response)
 app.get('/private/qbot/qxproall.php', (req, res) => {
-  const requestedSymbol = req.query.symbol ? req.query.symbol.toUpperCase() : null;
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Access-Control-Allow-Origin', '*');
 
-  if (!requestedSymbol) {
-    let allSymbols = {};
-    Object.keys(marketStore).forEach(sym => {
-      allSymbols[sym] = getFormattedData(sym);
+    const requestedSymbol = req.query.symbol;
+
+    if (requestedSymbol) {
+        const symbolData = marketCache.symbols[requestedSymbol];
+        if (symbolData) {
+            return res.status(200).json({
+                status: "success",
+                developer: "TANVIR HOSSAIN",
+                timestamp: Date.now(),
+                data: symbolData
+            });
+        } else {
+            return res.status(200).json({
+                status: "waiting",
+                message: `Caching live data for ${requestedSymbol}. Try again in a few seconds.`,
+                developer: "TANVIR HOSSAIN",
+                timestamp: Date.now()
+            });
+        }
+    }
+
+    // সব মার্কেটের ক্যাশ ডেটা ইন্সট্যান্ট রিটার্ন
+    return res.status(200).json({
+        status: "success",
+        developer: "TANVIR HOSSAIN",
+        timestamp: Date.now(),
+        markets: marketCache.all
     });
-
-    return res.json({
-      status: "success",
-      developer: "TANVIR HOSSAIN",
-      total_active_assets: Object.keys(marketStore).length,
-      timestamp: Date.now(),
-      data: allSymbols
-    });
-  }
-
-  res.json(getFormattedData(requestedSymbol));
-});
-
-app.get('/', (req, res) => {
-  res.send('Quotex All-Market API Server is running live!');
 });
 
 app.listen(PORT, () => {
-  console.log(`API Server started on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });
