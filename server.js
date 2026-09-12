@@ -4,104 +4,105 @@ const WebSocket = require('ws');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Instant Response-এর জন্য ইন-মেমরি ক্যাশ অবজেক্ট
-let marketCache = {
-    all: {},
-    symbols: {}
-};
+// Instant 0ms Latency Memory Cache
+let marketCache = {};
 
 function connectQuotexWS() {
     const ws = new WebSocket('wss://ws2.quotex.com/socket.io/?EIO=3&transport=websocket');
 
     ws.on('open', () => {
-        console.log('Connected to Quotex WebSocket');
-        // Quotex হ্যান্ডশেক এবং সাবস্ক্রিপশন পিং
-        ws.send('42["authorization",{"session":""}]');
+        console.log('Connected to Quotex WS');
+        // Quotex Ping & Ping loop
+        ws.send('2');
     });
 
     ws.on('message', (data) => {
-        const messageStr = data.toString();
+        const msg = data.toString();
 
-        // ক্যান্ডেল ও পেআউট ডেটা পার্স করে ক্যাশে সেভ করা
-        if (messageStr.startsWith('42')) {
+        // Quotex Session Ack
+        if (msg.startsWith('0')) {
+            ws.send('40');
+        }
+
+        // Live Market Updates
+        if (msg.startsWith('42')) {
             try {
-                const parsed = JSON.parse(messageStr.substring(2));
+                const parsed = JSON.parse(msg.substring(2));
                 const event = parsed[0];
                 const payload = parsed[1];
 
-                if (event === 'candles/update' || event === 'history' || event === 'realtime') {
-                    const symbol = payload.symbol || payload.pair;
-                    if (symbol) {
-                        marketCache.symbols[symbol] = {
-                            symbol: symbol,
-                            data: payload,
-                            updated_at: Date.now()
-                        };
-                    }
-                    marketCache.all[symbol || 'last_update'] = payload;
+                // Save symbol candle/payout data to RAM cache
+                if (payload && (payload.symbol || payload.pair)) {
+                    const sym = (payload.symbol || payload.pair).toUpperCase();
+                    marketCache[sym] = {
+                        symbol: sym,
+                        live: payload,
+                        timestamp: Date.now()
+                    };
+                } else if (typeof payload === 'object') {
+                    // Cache generic market events
+                    marketCache['latest'] = payload;
                 }
-            } catch (err) {
-                // জেসন পার্স না হলে ইগনোর করবে
+            } catch (e) {
+                // Ignore parse errors for raw packets
             }
         }
     });
 
     ws.on('close', () => {
-        console.log('WS Connection closed. Reconnecting in 1s...');
         setTimeout(connectQuotexWS, 1000);
     });
 
-    ws.on('error', (error) => {
-        console.error('WS Error:', error);
+    ws.on('error', () => {
         ws.close();
     });
 
-    // প্রতি ২৫ সেকেন্ড পর পর পিং পাঠিয়ে কানেকশন একটিভ রাখা
+    // Keeping connection alive every 20 seconds
     setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
             ws.send('2');
         }
-    }, 25000);
+    }, 20000);
 }
 
-// ব্যাকগ্রাউন্ডে WebSocket চালু রাখা
 connectQuotexWS();
 
-// API Endpoint (Instant 0.0001s Response)
+// 0ms Response API Endpoint
 app.get('/private/qbot/qxproall.php', (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Access-Control-Allow-Origin', '*');
 
-    const requestedSymbol = req.query.symbol;
+    const requestedSymbol = req.query.symbol ? req.query.symbol.toUpperCase() : null;
 
     if (requestedSymbol) {
-        const symbolData = marketCache.symbols[requestedSymbol];
-        if (symbolData) {
+        if (marketCache[requestedSymbol]) {
             return res.status(200).json({
                 status: "success",
                 developer: "TANVIR HOSSAIN",
                 timestamp: Date.now(),
-                data: symbolData
+                data: marketCache[requestedSymbol]
             });
         } else {
             return res.status(200).json({
-                status: "waiting",
-                message: `Caching live data for ${requestedSymbol}. Try again in a few seconds.`,
+                status: "success",
+                message: "Awaiting next ticker update",
                 developer: "TANVIR HOSSAIN",
+                available_cached_symbols: Object.keys(marketCache),
                 timestamp: Date.now()
             });
         }
     }
 
-    // সব মার্কেটের ক্যাশ ডেটা ইন্সট্যান্ট রিটার্ন
+    // Return all cached symbols instantly
     return res.status(200).json({
         status: "success",
         developer: "TANVIR HOSSAIN",
+        count: Object.keys(marketCache).length,
         timestamp: Date.now(),
-        markets: marketCache.all
+        markets: marketCache
     });
 });
 
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`Server active on port ${PORT}`);
 });
