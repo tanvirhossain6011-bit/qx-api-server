@@ -4,47 +4,38 @@ const WebSocket = require('ws');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Instant 0ms Latency Memory Cache
+// Instant Memory Cache Storage
 let marketCache = {};
 
 function connectQuotexWS() {
     const ws = new WebSocket('wss://ws2.quotex.com/socket.io/?EIO=3&transport=websocket');
 
     ws.on('open', () => {
-        console.log('Connected to Quotex WS');
-        // Quotex Ping & Ping loop
-        ws.send('2');
+        console.log('Quotex WebSocket Connected');
+        ws.send('2'); // Ping to initiate handshake
     });
 
     ws.on('message', (data) => {
         const msg = data.toString();
 
-        // Quotex Session Ack
         if (msg.startsWith('0')) {
             ws.send('40');
         }
 
-        // Live Market Updates
         if (msg.startsWith('42')) {
             try {
                 const parsed = JSON.parse(msg.substring(2));
-                const event = parsed[0];
                 const payload = parsed[1];
 
-                // Save symbol candle/payout data to RAM cache
-                if (payload && (payload.symbol || payload.pair)) {
-                    const sym = (payload.symbol || payload.pair).toUpperCase();
-                    marketCache[sym] = {
-                        symbol: sym,
-                        live: payload,
-                        timestamp: Date.now()
-                    };
-                } else if (typeof payload === 'object') {
-                    // Cache generic market events
-                    marketCache['latest'] = payload;
+                if (payload) {
+                    const symbol = payload.symbol || payload.pair;
+                    if (symbol) {
+                        const cleanSymbol = symbol.toUpperCase();
+                        marketCache[cleanSymbol] = payload;
+                    }
                 }
             } catch (e) {
-                // Ignore parse errors for raw packets
+                // Ignore parse errors
             }
         }
     });
@@ -57,7 +48,6 @@ function connectQuotexWS() {
         ws.close();
     });
 
-    // Keeping connection alive every 20 seconds
     setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
             ws.send('2');
@@ -67,42 +57,65 @@ function connectQuotexWS() {
 
 connectQuotexWS();
 
-// 0ms Response API Endpoint
+// Ultra Fast API Endpoint
 app.get('/private/qbot/qxproall.php', (req, res) => {
+    const startTime = process.hrtime();
+
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Access-Control-Allow-Origin', '*');
 
-    const requestedSymbol = req.query.symbol ? req.query.symbol.toUpperCase() : null;
+    const requestedPair = req.query.symbol || req.query.pair || "";
+    const cleanPair = requestedPair.trim().toUpperCase();
 
-    if (requestedSymbol) {
-        if (marketCache[requestedSymbol]) {
-            return res.status(200).json({
-                status: "success",
-                developer: "TANVIR HOSSAIN",
-                timestamp: Date.now(),
-                data: marketCache[requestedSymbol]
-            });
-        } else {
-            return res.status(200).json({
-                status: "success",
-                message: "Awaiting next ticker update",
-                developer: "TANVIR HOSSAIN",
-                available_cached_symbols: Object.keys(marketCache),
-                timestamp: Date.now()
-            });
-        }
+    // Execution time calculation in seconds
+    const diff = process.hrtime(startTime);
+    const executionTimeSec = (diff[0] + diff[1] / 1e9).toFixed(4);
+
+    if (!cleanPair) {
+        return res.status(200).json({
+            Owner_Developer: "TANVIR HOSSAIN",
+            Broker: "Quotex",
+            Timeframe: "M1",
+            Version: "2.10",
+            Execution_time: `${executionTimeSec} second`,
+            success: false,
+            error: "Missing required parameter: pair or symbol",
+            pair: "",
+            count: 0,
+            data: []
+        });
     }
 
-    // Return all cached symbols instantly
-    return res.status(200).json({
-        status: "success",
-        developer: "TANVIR HOSSAIN",
-        count: Object.keys(marketCache).length,
-        timestamp: Date.now(),
-        markets: marketCache
-    });
+    const pairData = marketCache[cleanPair];
+
+    if (pairData) {
+        return res.status(200).json({
+            Owner_Developer: "TANVIR HOSSAIN",
+            Broker: "Quotex",
+            Timeframe: "M1",
+            Version: "2.10",
+            Execution_time: `${executionTimeSec} second`,
+            success: true,
+            pair: cleanPair,
+            count: Array.isArray(pairData) ? pairData.length : 1,
+            data: pairData
+        });
+    } else {
+        return res.status(200).json({
+            Owner_Developer: "TANVIR HOSSAIN",
+            Broker: "Quotex",
+            Timeframe: "M1",
+            Version: "2.10",
+            Execution_time: `${executionTimeSec} second`,
+            success: false,
+            error: `No cached data found for pair: ${cleanPair}`,
+            pair: cleanPair,
+            count: 0,
+            data: []
+        });
+    }
 });
 
 app.listen(PORT, () => {
-    console.log(`Server active on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });
