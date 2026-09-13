@@ -7,7 +7,6 @@ const PORT = process.env.PORT || 3000;
 let liveMarketStore = {};
 
 function connectQuotexRealWebSocket() {
-    // Exact browser emulation headers to bypass Quotex cloudflare/firewall on free cloud
     const ws = new WebSocket('wss://ws2.quotex.com/socket.io/?EIO=3&transport=websocket', {
         headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -18,7 +17,7 @@ function connectQuotexRealWebSocket() {
     });
 
     ws.on('open', () => {
-        console.log('⚡ Connected to Quotex Verified Socket Stream');
+        console.log('Quotex WebSocket Connected Successfully');
         ws.send('2'); 
     });
 
@@ -38,8 +37,6 @@ function connectQuotexRealWebSocket() {
                     const rawSymbol = payload.symbol || payload.pair || payload.asset || "";
                     if (rawSymbol) {
                         const cleanSymbol = rawSymbol.toUpperCase().trim();
-                        
-                        // Exact live payout parsing from broker payload
                         const livePayout = payload.payout !== undefined ? Number(payload.payout) : (payload.percent !== undefined ? Number(payload.percent) : 84);
                         
                         let openPrice = Number(payload.open || payload.price || 1.0);
@@ -86,7 +83,7 @@ function connectQuotexRealWebSocket() {
     });
 
     ws.on('close', () => {
-        setTimeout(connectQuotexRealWebSocket, 500);
+        setTimeout(connectQuotexRealWebSocket, 1000);
     });
 
     ws.on('error', () => {
@@ -121,7 +118,7 @@ app.get('/private/qbot/qxproall.php', (req, res) => {
                 Broker: "Quotex",
                 Status: "Syncing Live Stream",
                 success: false,
-                message: `Initializing live feed for ${cleanPair}. Please refresh.`
+                message: `Initializing live feed for ${cleanPair}. Please wait a few seconds.`
             });
         }
 
@@ -131,7 +128,7 @@ app.get('/private/qbot/qxproall.php', (req, res) => {
             Owner_Developer: "TANVIR HOSSAIN",
             Broker: "Quotex",
             Mode: "Real-Time Direct Stream",
-            Version: "8.00",
+            Version: "8.10",
             Execution_time: `${executionTimeSec} second`,
             success: true,
             pair: cleanPair,
@@ -159,7 +156,7 @@ app.get('/private/qbot/qxproall.php', (req, res) => {
         Owner_Developer: "TANVIR HOSSAIN",
         Broker: "Quotex",
         Mode: "Real-Time Direct Stream",
-        Version: "8.00",
+        Version: "8.10",
         Execution_time: `${executionTimeSec} second`,
         success: true,
         active_markets_count: Object.keys(formattedAllMarkets).length,
@@ -168,5 +165,5 @@ app.get('/private/qbot/qxproall.php', (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`🚀 Ultimate Real-Time QX Server running on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });
